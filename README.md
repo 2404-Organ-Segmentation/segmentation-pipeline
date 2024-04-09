@@ -18,6 +18,10 @@ This package implements a machine learning pipeline for semantic segmentation on
     ```
 3. (Optional) When working with BtCV dataset, the Swin-UNETR architecture offers self-supervised pretrained model on the dataset. When using pre-trained model before training, it allows the model to converge faster. Download the pretrained self-supervised model [here](https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/model_swinvit.pt)
 
+
+## Documentation
+Documention is provided [here](https://raw.githack.com/2404-Organ-Segmentation/segmentation-pipeline/main/docs/html/pipeline.html#pipeline.Pipeline)
+
 ## Examples
 ```
 from pipeline Import Pipeline
@@ -143,5 +147,3 @@ inf_transforms = Compose(
 trainer.inference(data_folder = 'path/to/inference/data/folder', output_folder="path/to/output/folder", transforms=inf_transforms)
 ```
 
-## Documentation
-Documention is provided [here](https://raw.githack.com/2404-Organ-Segmentation/segmentation-pipeline/main/docs/html/pipeline.html#pipeline.Pipeline)
