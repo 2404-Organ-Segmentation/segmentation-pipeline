@@ -144,4 +144,4 @@ trainer.inference(data_folder = 'path/to/inference/data/folder', output_folder="
 ```
 
 ## Documentation
-Documention is provided [here](docs/html/pipeline.html)
+Documention is provided [here](https://raw.githack.com/2404-Organ-Segmentation/segmentation-pipeline/main/docs/html/pipeline.html#pipeline.Pipeline)
