@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>pipeline.pipeline &mdash; Medical Image Organ Segmentation Pipeline 00.00.01 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=19f00094" />
+
+  
+  <!--[if lt IE 9]>
+    <script src="../../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  
+        <script src="../../_static/jquery.js?v=5d32c60e"></script>
+        <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+        <script src="../../_static/documentation_options.js?v=d7bb8d4d"></script>
+        <script src="../../_static/doctools.js?v=888ff710"></script>
+        <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            Medical Image Organ Segmentation Pipeline
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../modules.html">pipeline</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">Medical Image Organ Segmentation Pipeline</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">pipeline.pipeline</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for pipeline.pipeline</h1><div class="highlight"><pre>
+<span></span><span class="kn">from</span> <span class="nn">monai.networks.nets</span> <span class="kn">import</span> <span class="n">SwinUNETR</span><span class="p">,</span> <span class="n">UNETR</span>
+<span class="kn">from</span> <span class="nn">monai.data</span> <span class="kn">import</span> <span class="n">load_decathlon_datalist</span><span class="p">,</span> <span class="n">CacheDataset</span><span class="p">,</span> <span class="n">decollate_batch</span><span class="p">,</span> <span class="n">DataLoader</span>
+<span class="kn">from</span> <span class="nn">monai.transforms</span> <span class="kn">import</span> <span class="p">(</span>
+    <span class="n">AsDiscrete</span><span class="p">,</span>
+    <span class="n">Compose</span><span class="p">,</span>
+    <span class="n">EnsureTyped</span><span class="p">,</span>
+    <span class="n">Activationsd</span><span class="p">,</span>
+    <span class="n">Invertd</span><span class="p">,</span>
+    <span class="n">AsDiscreted</span><span class="p">,</span>
+    <span class="n">SaveImaged</span><span class="p">,</span>
+    <span class="n">KeepLargestConnectedComponentd</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span> <span class="nn">monai.metrics</span> <span class="kn">import</span> <span class="n">DiceMetric</span>
+<span class="kn">from</span> <span class="nn">monai.losses</span> <span class="kn">import</span> <span class="n">DiceCELoss</span>
+<span class="kn">from</span> <span class="nn">monai.inferers</span> <span class="kn">import</span> <span class="n">sliding_window_inference</span>
+<span class="kn">import</span> <span class="nn">torch</span>
+<span class="kn">import</span> <span class="nn">re</span>
+<span class="kn">import</span> <span class="nn">nibabel</span> <span class="k">as</span> <span class="nn">nib</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">from</span> <span class="nn">tqdm</span> <span class="kn">import</span> <span class="n">tqdm</span>
+<span class="kn">import</span> <span class="nn">json</span>
+<span class="kn">from</span> <span class="nn">torch.utils.tensorboard</span> <span class="kn">import</span> <span class="n">SummaryWriter</span>
+<span class="kn">from</span> <span class="nn">datetime</span> <span class="kn">import</span> <span class="n">datetime</span>
+<span class="kn">import</span> <span class="nn">math</span>
+<span class="kn">from</span> <span class="nn">monai</span> <span class="kn">import</span> <span class="n">data</span>
+
+
+<div class="viewcode-block" id="Pipeline">
+<a class="viewcode-back" href="../../pipeline.html#pipeline.Pipeline">[docs]</a>
+<span class="k">class</span> <span class="nc">Pipeline</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Class for managing machine learning pipeline for medical image semantic segmentation. It assists with loading </span>
+<span class="sd">    models and data for training, and it automatically records metrics and save check points.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        debug_mode(bool): Whether the pipeline is in debug mode or not</span>
+<span class="sd">        model: The neural network used for training or inference.</span>
+<span class="sd">        model_type (str): Neural network architecture of model. Currently supports UNETR and SWINUNETR</span>
+<span class="sd">        train_transforms: Transformations applied on the training dataset</span>
+<span class="sd">        val_transforms: Transformations applied on the validation dataset</span>
+<span class="sd">        modality (int): Input dimension of the loaded dataset</span>
+<span class="sd">        num_of_labels (int): Number of output classes of the dataset</span>
+<span class="sd">        dataset_name (str): Name of the dataset</span>
+<span class="sd">        num_train_images (int): Number of training images in the dataset</span>
+<span class="sd">        num_val_images (int): Number of validation images in the dataset</span>
+<span class="sd">        train_batch_size (int): Batchsize for training</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">model_type</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">modality</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">num_of_labels</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">model_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> 
+                 <span class="n">debug</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot; </span>
+<span class="sd">        Parent constructor for model prediction. Defines the model type that is used as well as the paths for</span>
+<span class="sd">        loading the pretrained model, loading and saving the data</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            model: The model that is going to be used for predictions. Should be monai UNETR or SwinUNETR.</span>
+<span class="sd">            model_path (str): The path to the pretrained model as a string. Should include the model .pth file.</span>
+<span class="sd">            debug (bool): Boolean that enables debug messages. Defaults to false to disable messages.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;CUDA_DEVICE_ORDER&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;PCI_BUS_ID&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span> <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">is_available</span><span class="p">()</span> <span class="k">else</span> <span class="s2">&quot;cpu&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">debug_mode</span> <span class="o">=</span> <span class="n">debug</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">create_model</span><span class="p">(</span><span class="n">model_type</span><span class="o">=</span><span class="n">model_type</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="n">modality</span><span class="p">,</span> <span class="n">num_of_labels</span><span class="o">=</span><span class="n">num_of_labels</span><span class="p">,</span>
+                              <span class="n">model_path</span><span class="o">=</span><span class="n">model_path</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Pipeline.create_model">
+<a class="viewcode-back" href="../../pipeline.html#pipeline.Pipeline.create_model">[docs]</a>
+    <span class="k">def</span> <span class="nf">create_model</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">model_type</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">modality</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">num_of_labels</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">model_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Creates a new model for the pipeline</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            model_type (str): Type of model the pipeline uses, takes value &quot;UNETR&quot; or &quot;SWINUNETR&quot;</span>
+<span class="sd">                              for their respective model types.</span>
+<span class="sd">            modality (int): Modality of the dataset. Determines the input dimension of the model.</span>
+<span class="sd">            num_of_labels (int): Number of labels to the dataset.</span>
+<span class="sd">            model_path (str): File path to the saved model of the same type as model_type.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">model_type</span> <span class="o">=</span> <span class="n">model_type</span>
+        <span class="k">if</span> <span class="n">model_type</span> <span class="o">==</span> <span class="s2">&quot;UNETR&quot;</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <span class="n">UNETR</span><span class="p">(</span>
+                <span class="n">in_channels</span><span class="o">=</span><span class="n">modality</span><span class="p">,</span>
+                <span class="n">out_channels</span><span class="o">=</span><span class="n">num_of_labels</span><span class="p">,</span>
+                <span class="n">img_size</span><span class="o">=</span><span class="p">(</span><span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">),</span>
+                <span class="n">feature_size</span><span class="o">=</span><span class="mi">16</span><span class="p">,</span>
+                <span class="n">hidden_size</span><span class="o">=</span><span class="mi">768</span><span class="p">,</span>
+                <span class="n">mlp_dim</span><span class="o">=</span><span class="mi">3072</span><span class="p">,</span>
+                <span class="n">num_heads</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span>
+                <span class="n">pos_embed</span><span class="o">=</span><span class="s2">&quot;perceptron&quot;</span><span class="p">,</span>
+                <span class="n">norm_name</span><span class="o">=</span><span class="s2">&quot;instance&quot;</span><span class="p">,</span>
+                <span class="n">res_block</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                <span class="n">dropout_rate</span><span class="o">=</span><span class="mf">0.0</span>
+            <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">model_type</span> <span class="o">==</span> <span class="s2">&quot;SWINUNETR&quot;</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <span class="n">SwinUNETR</span><span class="p">(</span>
+                <span class="n">img_size</span><span class="o">=</span><span class="p">(</span><span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">),</span>
+                <span class="n">in_channels</span><span class="o">=</span><span class="n">modality</span><span class="p">,</span>
+                <span class="n">out_channels</span><span class="o">=</span><span class="n">num_of_labels</span><span class="p">,</span>
+                <span class="n">feature_size</span><span class="o">=</span><span class="mi">48</span><span class="p">,</span>
+                <span class="n">use_checkpoint</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">model_path</span> <span class="o">==</span> <span class="s2">&quot;&quot;</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_from</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)),</span>
+                                                                <span class="s2">&quot;model_swinvit.pt&quot;</span><span class="p">)))</span>
+            <span class="k">except</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">__debug</span><span class="p">(</span><span class="s2">&quot;Warning: Could not find model_swinvit.pt. It is best to initiate SwinUNETR &quot;</span> <span class="o">+</span>
+                             <span class="s2">&quot;with self supervised pretrained model to reduce training time&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">Exception</span><span class="p">(</span><span class="s2">&quot;Unexpected model type given&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">model_path</span> <span class="o">!=</span> <span class="s2">&quot;&quot;</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">model_path</span><span class="p">))</span></div>
+
+
+<div class="viewcode-block" id="Pipeline.load_model">
+<a class="viewcode-back" href="../../pipeline.html#pipeline.Pipeline.load_model">[docs]</a>
+    <span class="k">def</span> <span class="nf">load_model</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">model_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Load the saved model.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            model_path (str): File path to the saved model of the same type as model_type.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">model_path</span><span class="p">))</span></div>
+
+
+<div class="viewcode-block" id="Pipeline.load_data">
+<a class="viewcode-back" href="../../pipeline.html#pipeline.Pipeline.load_data">[docs]</a>
+    <span class="k">def</span> <span class="nf">load_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dataset_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">train_transforms</span><span class="p">,</span> <span class="n">val_transforms</span><span class="p">,</span> <span class="n">cache_num_train</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">24</span><span class="p">,</span>
+                  <span class="n">train_batch_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">cache_num_val</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">val_batch_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">workers</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Load the training and validation data from the json file for the dataset.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            dataset_path (str): File path to the json file of the dataset.</span>
+<span class="sd">            train_transforms: Transformation done on the dataset during training.</span>
+<span class="sd">            val_transforms: Transformation done on the dataset during validation.</span>
+<span class="sd">            cache_num_train (int): Number of cached data for training dataset.</span>
+<span class="sd">            train_batch_size (int): Batch size for training.</span>
+<span class="sd">            cache_num_val (int): Number of cached data for validation dataset.</span>
+<span class="sd">            val_batch_size (int): Batch size for validation.</span>
+<span class="sd">            workers (int): Number of workers working in parallel.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">datalist</span> <span class="o">=</span> <span class="n">load_decathlon_datalist</span><span class="p">(</span><span class="n">dataset_path</span><span class="p">,</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;training&quot;</span><span class="p">)</span>
+        <span class="n">val_files</span> <span class="o">=</span> <span class="n">load_decathlon_datalist</span><span class="p">(</span><span class="n">dataset_path</span><span class="p">,</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;validation&quot;</span><span class="p">)</span>
+        <span class="n">train_ds</span> <span class="o">=</span> <span class="n">CacheDataset</span><span class="p">(</span>
+            <span class="n">data</span><span class="o">=</span><span class="n">datalist</span><span class="p">,</span>
+            <span class="n">transform</span><span class="o">=</span><span class="n">train_transforms</span><span class="p">,</span>
+            <span class="n">cache_num</span><span class="o">=</span><span class="n">cache_num_train</span><span class="p">,</span>
+            <span class="n">cache_rate</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+            <span class="n">num_workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">train_loader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span><span class="n">train_ds</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="n">train_batch_size</span><span class="p">,</span> <span class="n">shuffle</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">num_workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span>
+                                  <span class="n">pin_memory</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">val_ds</span> <span class="o">=</span> <span class="n">CacheDataset</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">val_files</span><span class="p">,</span> <span class="n">transform</span><span class="o">=</span><span class="n">val_transforms</span><span class="p">,</span> <span class="n">cache_num</span><span class="o">=</span><span class="n">cache_num_val</span><span class="p">,</span> <span class="n">cache_rate</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+                              <span class="n">num_workers</span><span class="o">=</span><span class="n">workers</span><span class="p">)</span>
+        <span class="n">val_loader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span><span class="n">val_ds</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="n">val_batch_size</span><span class="p">,</span> <span class="n">shuffle</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">num_workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span> <span class="n">pin_memory</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">train_transforms</span> <span class="o">=</span> <span class="n">train_transforms</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">val_transforms</span> <span class="o">=</span> <span class="n">val_transforms</span>
+
+        <span class="n">f</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="n">dataset_path</span><span class="p">)</span>
+        <span class="n">json_data</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">modality</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">json_data</span><span class="p">[</span><span class="s1">&#39;modality&#39;</span><span class="p">])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_of_labels</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">json_data</span><span class="p">[</span><span class="s1">&#39;labels&#39;</span><span class="p">])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">dataset_name</span> <span class="o">=</span> <span class="n">json_data</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_train_images</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">train_ds</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_val_images</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">val_ds</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">train_batch_size</span> <span class="o">=</span> <span class="n">train_batch_size</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">val_loader</span> <span class="o">=</span> <span class="n">val_loader</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">train_loader</span> <span class="o">=</span> <span class="n">train_loader</span></div>
+
+
+<div class="viewcode-block" id="Pipeline.train">
+<a class="viewcode-back" href="../../pipeline.html#pipeline.Pipeline.train">[docs]</a>
+    <span class="k">def</span> <span class="nf">train</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_epoch</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">epoch_val</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">learning_rate</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-4</span><span class="p">,</span> <span class="n">weight_decay</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-5</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Initiate training for the loaded model on the loaded dataset.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            max_epoch: Total number of epoch to train.</span>
+<span class="sd">            epoch_val: Number of epochs between every validation and saving the model</span>
+<span class="sd">            learning_rate: learning rate of the training process with AdamW optimizer</span>
+<span class="sd">            weight_decay: Weight decay for the AdamW optimizer</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">torch</span><span class="o">.</span><span class="n">backends</span><span class="o">.</span><span class="n">cudnn</span><span class="o">.</span><span class="n">benchmark</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="n">loss_function</span> <span class="o">=</span> <span class="n">DiceCELoss</span><span class="p">(</span><span class="n">to_onehot_y</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">softmax</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">optimizer</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">AdamW</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="n">learning_rate</span><span class="p">,</span> <span class="n">weight_decay</span><span class="o">=</span><span class="n">weight_decay</span><span class="p">)</span>
+        <span class="n">scaler</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">amp</span><span class="o">.</span><span class="n">GradScaler</span><span class="p">()</span>
+
+        <span class="n">max_iterations</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">max_epoch</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_train_images</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">train_batch_size</span><span class="p">)</span>
+        <span class="n">eval_num</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">epoch_val</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_train_images</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">train_batch_size</span><span class="p">)</span>
+        <span class="n">post_label</span> <span class="o">=</span> <span class="n">AsDiscrete</span><span class="p">(</span><span class="n">to_onehot</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">num_of_labels</span><span class="p">)</span>
+        <span class="n">post_pred</span> <span class="o">=</span> <span class="n">AsDiscrete</span><span class="p">(</span><span class="n">argmax</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">to_onehot</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">num_of_labels</span><span class="p">)</span>
+
+        <span class="n">dice_metric</span> <span class="o">=</span> <span class="n">DiceMetric</span><span class="p">(</span><span class="n">include_background</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">reduction</span><span class="o">=</span><span class="s2">&quot;mean&quot;</span><span class="p">,</span> <span class="n">get_not_nans</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+        <span class="n">save_folder</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">model_type</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">dataset_name</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span><span class="o">.</span><span class="n">strftime</span><span class="p">(</span><span class="s2">&quot;%Y_%m_</span><span class="si">%d</span><span class="s2">_%H_%M_%S&quot;</span><span class="p">))</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">save_folder</span><span class="p">)</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">save_folder</span> <span class="o">+</span> <span class="s2">&quot;/logs&quot;</span><span class="p">)</span>
+        <span class="n">writer</span> <span class="o">=</span> <span class="n">SummaryWriter</span><span class="p">(</span><span class="n">save_folder</span> <span class="o">+</span> <span class="s1">&#39;/logs/</span><span class="si">{}</span><span class="s1">&#39;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span><span class="o">.</span><span class="n">strftime</span><span class="p">(</span><span class="s2">&quot;%Y_%m_</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">)))</span>
+
+        <span class="n">global_step</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">dice_val_best</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="n">global_step_best</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">epoch_loss_values</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">metric_values</span> <span class="o">=</span> <span class="p">[]</span>
+
+        <span class="k">def</span> <span class="nf">__validation</span><span class="p">(</span><span class="n">epoch_iterator_val</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
+            <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+                <span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">epoch_iterator_val</span><span class="p">:</span>
+                    <span class="n">val_inputs</span><span class="p">,</span> <span class="n">val_labels</span> <span class="o">=</span> <span class="p">(</span><span class="n">batch</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">cuda</span><span class="p">(),</span> <span class="n">batch</span><span class="p">[</span><span class="s2">&quot;label&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">cuda</span><span class="p">())</span>
+                    <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">amp</span><span class="o">.</span><span class="n">autocast</span><span class="p">():</span>
+                        <span class="n">val_outputs</span> <span class="o">=</span> <span class="n">sliding_window_inference</span><span class="p">(</span><span class="n">val_inputs</span><span class="p">,</span> <span class="p">(</span><span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">),</span> <span class="mi">4</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">)</span>
+                    <span class="n">val_labels_list</span> <span class="o">=</span> <span class="n">decollate_batch</span><span class="p">(</span><span class="n">val_labels</span><span class="p">)</span>
+                    <span class="n">val_labels_convert</span> <span class="o">=</span> <span class="p">[</span><span class="n">post_label</span><span class="p">(</span><span class="n">val_label_tensor</span><span class="p">)</span> <span class="k">for</span> <span class="n">val_label_tensor</span> <span class="ow">in</span> <span class="n">val_labels_list</span><span class="p">]</span>
+                    <span class="n">val_outputs_list</span> <span class="o">=</span> <span class="n">decollate_batch</span><span class="p">(</span><span class="n">val_outputs</span><span class="p">)</span>
+                    <span class="n">val_output_convert</span> <span class="o">=</span> <span class="p">[</span><span class="n">post_pred</span><span class="p">(</span><span class="n">val_pred_tensor</span><span class="p">)</span> <span class="k">for</span> <span class="n">val_pred_tensor</span> <span class="ow">in</span> <span class="n">val_outputs_list</span><span class="p">]</span>
+
+                    <span class="c1"># Calculate metrics</span>
+                    <span class="n">dice_metric</span><span class="p">(</span><span class="n">y_pred</span><span class="o">=</span><span class="n">val_output_convert</span><span class="p">,</span> <span class="n">y</span><span class="o">=</span><span class="n">val_labels_convert</span><span class="p">)</span>
+
+                    <span class="n">epoch_iterator_val</span><span class="o">.</span><span class="n">set_description</span><span class="p">(</span>
+                        <span class="s2">&quot;Validate (</span><span class="si">%d</span><span class="s2"> / </span><span class="si">%d</span><span class="s2"> Steps)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">global_step</span><span class="p">,</span> <span class="n">max_iterations</span><span class="p">))</span>  <span class="c1"># noqa: B038</span>
+                <span class="n">mean_dice_val</span> <span class="o">=</span> <span class="n">dice_metric</span><span class="o">.</span><span class="n">aggregate</span><span class="p">()</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+
+                <span class="n">dice_metric</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+
+            <span class="k">return</span> <span class="n">mean_dice_val</span>
+
+        <span class="k">def</span> <span class="nf">__train</span><span class="p">(</span><span class="n">global_step</span><span class="p">,</span> <span class="n">train_loader</span><span class="p">,</span> <span class="n">dice_val_best</span><span class="p">,</span> <span class="n">global_step_best</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">train</span><span class="p">()</span>
+            <span class="n">epoch_loss</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="n">step</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="n">epoch_iterator</span> <span class="o">=</span> <span class="n">tqdm</span><span class="p">(</span><span class="n">train_loader</span><span class="p">,</span> <span class="n">desc</span><span class="o">=</span><span class="s2">&quot;Training (X / X Steps) (loss=X.X)&quot;</span><span class="p">,</span> <span class="n">dynamic_ncols</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">step</span><span class="p">,</span> <span class="n">batch</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">epoch_iterator</span><span class="p">):</span>
+                <span class="n">step</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="o">=</span> <span class="p">(</span><span class="n">batch</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">cuda</span><span class="p">(),</span> <span class="n">batch</span><span class="p">[</span><span class="s2">&quot;label&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">cuda</span><span class="p">())</span>
+                <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">amp</span><span class="o">.</span><span class="n">autocast</span><span class="p">():</span>
+                    <span class="n">logit_map</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+                    <span class="n">loss</span> <span class="o">=</span> <span class="n">loss_function</span><span class="p">(</span><span class="n">logit_map</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>
+                <span class="n">scaler</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="n">loss</span><span class="p">)</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
+                <span class="n">epoch_loss</span> <span class="o">+=</span> <span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+                <span class="n">scaler</span><span class="o">.</span><span class="n">unscale_</span><span class="p">(</span><span class="n">optimizer</span><span class="p">)</span>
+                <span class="n">scaler</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">optimizer</span><span class="p">)</span>
+                <span class="n">scaler</span><span class="o">.</span><span class="n">update</span><span class="p">()</span>
+                <span class="n">optimizer</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
+                <span class="n">epoch_iterator</span><span class="o">.</span><span class="n">set_description</span><span class="p">(</span> 
+                    <span class="sa">f</span><span class="s2">&quot;Training (</span><span class="si">{</span><span class="n">global_step</span><span class="si">}</span><span class="s2"> / </span><span class="si">{</span><span class="n">max_iterations</span><span class="si">}</span><span class="s2"> Steps) (loss=</span><span class="si">{</span><span class="n">loss</span><span class="si">:</span><span class="s2">2.5f</span><span class="si">}</span><span class="s2">)&quot;</span>
+                <span class="p">)</span>
+
+                <span class="k">if</span> <span class="p">(</span><span class="n">global_step</span> <span class="o">%</span> <span class="n">eval_num</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">global_step</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">)</span> <span class="ow">or</span> <span class="n">global_step</span> <span class="o">==</span> <span class="n">max_iterations</span><span class="p">:</span>
+                    <span class="n">epoch_iterator_val</span> <span class="o">=</span> <span class="n">tqdm</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">val_loader</span><span class="p">,</span> <span class="n">desc</span><span class="o">=</span><span class="s2">&quot;Validate (X / X Steps) (dice=X.X)&quot;</span><span class="p">,</span>
+                                              <span class="n">dynamic_ncols</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                    <span class="n">dice_val</span> <span class="o">=</span> <span class="n">__validation</span><span class="p">(</span><span class="n">epoch_iterator_val</span><span class="p">)</span>
+                    <span class="n">epoch_loss</span> <span class="o">/=</span> <span class="n">step</span>
+                    <span class="n">epoch_loss_values</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">epoch_loss</span><span class="p">)</span>
+                    <span class="n">metric_values</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">dice_val</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">dice_val</span> <span class="o">&gt;</span> <span class="n">dice_val_best</span><span class="p">:</span>
+                        <span class="n">dice_val_best</span> <span class="o">=</span> <span class="n">dice_val</span>
+                        <span class="n">global_step_best</span> <span class="o">=</span> <span class="n">global_step</span>
+
+                    <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span>
+                               <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">save_folder</span><span class="p">,</span>
+                                            <span class="bp">self</span><span class="o">.</span><span class="n">model_type</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">dataset_name</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">global_step</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;.pth&quot;</span><span class="p">))</span>
+                    <span class="nb">print</span><span class="p">(</span>
+                        <span class="s2">&quot;Model Was Saved ! Current Best Avg. Dice: </span><span class="si">{}</span><span class="s2"> Current Avg. Dice: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">dice_val_best</span><span class="p">,</span>
+                                                                                                    <span class="n">dice_val</span><span class="p">)</span>
+                    <span class="p">)</span>
+                    <span class="c1"># Record metric with tensorboard</span>
+                    <span class="n">writer</span><span class="o">.</span><span class="n">add_scalar</span><span class="p">(</span><span class="s2">&quot;Dice Val&quot;</span><span class="p">,</span> <span class="n">dice_val</span><span class="p">,</span> <span class="n">global_step</span><span class="o">=</span><span class="n">global_step</span><span class="p">)</span>
+                    <span class="n">writer</span><span class="o">.</span><span class="n">add_scalar</span><span class="p">(</span><span class="s2">&quot;Dice Cross Entropy Loss&quot;</span><span class="p">,</span> <span class="n">epoch_loss</span><span class="p">,</span> <span class="n">global_step</span><span class="o">=</span><span class="n">global_step</span><span class="p">)</span>
+                <span class="n">global_step</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">return</span> <span class="n">global_step</span><span class="p">,</span> <span class="n">dice_val_best</span><span class="p">,</span> <span class="n">global_step_best</span>
+
+        <span class="k">while</span> <span class="n">global_step</span> <span class="o">&lt;</span> <span class="n">max_iterations</span><span class="p">:</span>
+            <span class="n">global_step</span><span class="p">,</span> <span class="n">dice_val_best</span><span class="p">,</span> <span class="n">global_step_best</span> <span class="o">=</span> <span class="n">__train</span><span class="p">(</span><span class="n">global_step</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">train_loader</span><span class="p">,</span> <span class="n">dice_val_best</span><span class="p">,</span>
+                                                                   <span class="n">global_step_best</span><span class="p">)</span>
+
+        <span class="n">writer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="Pipeline.inference">
+<a class="viewcode-back" href="../../pipeline.html#pipeline.Pipeline.inference">[docs]</a>
+    <span class="k">def</span> <span class="nf">inference</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data_folder</span><span class="p">,</span> <span class="n">output_folder</span><span class="p">,</span> <span class="n">transforms</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot; </span>
+<span class="sd">        Runs the prediction on the files located under self.data_folder, will save the files as Nifti (.nii.gz)</span>
+<span class="sd">        format under output_folder. If output_folder is not specified, then it will be saved to the folder where the</span>
+<span class="sd">        data was originally taken from.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            data_folder (str): The folder where the data is located as string. All files in this folder should be medical</span>
+<span class="sd">                images.</span>
+<span class="sd">            output_folder: The folder path to save the nifti images as a string. If None, then it will save to the</span>
+<span class="sd">                folder where the data files are located. (self.data_folder)</span>
+<span class="sd">            transforms: Transformations to apply onto images before inferece. Should be similar to transformation done on </span>
+<span class="sd">                validation dataset</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">inference_transforms</span> <span class="o">=</span> <span class="n">transforms</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">file_dicts</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">files</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">__load_inference_dataset</span><span class="p">(</span><span class="n">data_folder</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
+        <span class="n">counter</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+            <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">test_data</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">val_loader_inference</span><span class="p">):</span>
+                <span class="c1"># Make prediction</span>
+                <span class="n">img</span> <span class="o">=</span> <span class="n">test_data</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+                <span class="n">test_data</span><span class="p">[</span><span class="s2">&quot;pred&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sliding_window_inference</span><span class="p">(</span><span class="n">img</span><span class="p">,</span> <span class="p">(</span><span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">),</span> <span class="mi">4</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">,</span> <span class="n">overlap</span><span class="o">=</span><span class="mf">0.8</span><span class="p">)</span>
+
+                <span class="c1"># Post-processing transforms</span>
+                <span class="c1"># Source: https://github.com/MASILab/3DUX-Net/tree/14ea46b7b4c4980b46aba066aaaa24b1d9c1bb0d</span>
+                <span class="n">post_transforms</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">([</span>
+                    <span class="n">EnsureTyped</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="s2">&quot;pred&quot;</span><span class="p">),</span>
+                    <span class="n">Activationsd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="s2">&quot;pred&quot;</span><span class="p">,</span> <span class="n">softmax</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+                    <span class="n">Invertd</span><span class="p">(</span>
+                        <span class="n">keys</span><span class="o">=</span><span class="s2">&quot;pred&quot;</span><span class="p">,</span>  <span class="c1"># invert the `pred` data field, also support multiple fields</span>
+                        <span class="n">transform</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">inference_transforms</span><span class="p">,</span>
+                        <span class="n">orig_keys</span><span class="o">=</span><span class="s2">&quot;image&quot;</span><span class="p">,</span>
+                        <span class="c1"># get the previously applied pre_transforms information on the `img` data field,</span>
+                        <span class="c1"># then invert `pred` based on this information. we can use same info</span>
+                        <span class="c1"># for multiple fields, also support different orig_keys for different fields</span>
+                        <span class="n">meta_keys</span><span class="o">=</span><span class="s2">&quot;pred_meta_dict&quot;</span><span class="p">,</span>  <span class="c1"># key field to save inverted meta data, every item maps to `keys`</span>
+                        <span class="n">orig_meta_keys</span><span class="o">=</span><span class="s2">&quot;image_meta_dict&quot;</span><span class="p">,</span>
+                        <span class="c1"># get the meta data from `img_meta_dict` field when inverting,</span>
+                        <span class="c1"># for example, may need the `affine` to invert `Spacingd` transform,</span>
+                        <span class="c1"># multiple fields can use the same meta data to invert</span>
+                        <span class="n">meta_key_postfix</span><span class="o">=</span><span class="s2">&quot;meta_dict&quot;</span><span class="p">,</span>
+                        <span class="c1"># if `meta_keys=None`, use &quot;{keys}_{meta_key_postfix}&quot; as the meta key,</span>
+                        <span class="c1"># if `orig_meta_keys=None`, use &quot;{orig_keys}_{meta_key_postfix}&quot;,</span>
+                        <span class="c1"># otherwise, no need this arg during inverting</span>
+                        <span class="n">nearest_interp</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+                        <span class="c1"># don&#39;t change the interpolation mode to &quot;nearest&quot; when inverting transforms</span>
+                        <span class="c1"># to ensure a smooth output, then execute `AsDiscreted` transform</span>
+                        <span class="n">to_tensor</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># convert to PyTorch Tensor after inverting</span>
+                    <span class="p">),</span>
+                    <span class="n">AsDiscreted</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="s2">&quot;pred&quot;</span><span class="p">,</span> <span class="n">argmax</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+                    <span class="n">KeepLargestConnectedComponentd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="s1">&#39;pred&#39;</span><span class="p">,</span> <span class="n">applied_labels</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">]),</span>
+                    <span class="n">SaveImaged</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="s2">&quot;pred&quot;</span><span class="p">,</span> <span class="n">meta_keys</span><span class="o">=</span><span class="s2">&quot;pred_meta_dict&quot;</span><span class="p">,</span> <span class="n">output_dir</span><span class="o">=</span><span class="n">output_folder</span><span class="p">,</span>
+                               <span class="n">output_postfix</span><span class="o">=</span><span class="s2">&quot;temp&quot;</span><span class="p">,</span> <span class="n">output_ext</span><span class="o">=</span><span class="s2">&quot;.nii.gz&quot;</span><span class="p">,</span> <span class="n">resample</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">separate_folder</span><span class="o">=</span><span class="kc">False</span><span class="p">),</span>
+                <span class="p">])</span>
+                <span class="n">test_data</span> <span class="o">=</span> <span class="p">[</span><span class="n">post_transforms</span><span class="p">(</span><span class="n">j</span><span class="p">)</span> <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="n">decollate_batch</span><span class="p">(</span><span class="n">test_data</span><span class="p">)]</span>
+
+                <span class="c1"># Small modification to affine matrix</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">__load_and_translate</span><span class="p">(</span><span class="n">output_folder</span><span class="o">=</span><span class="n">output_folder</span><span class="p">,</span> <span class="n">file_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">files</span><span class="p">[</span><span class="n">counter</span><span class="p">])</span>
+                <span class="n">counter</span> <span class="o">+=</span> <span class="mi">1</span></div>
+
+
+    <span class="k">def</span> <span class="nf">__load_inference_dataset</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data_folder</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Loads and preprocesses the data specified in under data_folder. Will save the data as a Monai</span>
+<span class="sd">        Dataloader and apply the relevant transforms that were used for training.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            data_folder: Path as a string to the folder where the medical images to be segmented are located.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">__load_files_from_folder</span><span class="p">(</span><span class="n">data_folder</span><span class="p">)</span>
+        <span class="n">test_dataset</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">Dataset</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">file_dicts</span><span class="p">,</span> <span class="n">transform</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">inference_transforms</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">val_loader_inference</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">DataLoader</span><span class="p">(</span>
+            <span class="n">test_dataset</span><span class="p">,</span>
+            <span class="n">batch_size</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="n">shuffle</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">num_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+            <span class="n">pin_memory</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">__load_files_from_folder</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data_folder</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Loads the files into a list of dictionaries to be read by Monai&#39;s built in dataset. This needs to be</span>
+<span class="sd">        formatted in this specific way so the transforms can be properly applied (the transforms are expecting specific</span>
+<span class="sd">        keys). The files that are loaded are all the files in the folder specified by data_folder. This is a mock</span>
+<span class="sd">        of Monai&#39;s load_decathlon_datalist().</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            data_folder: Path as a string to the folder where the medical images to be segmented are located.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">file_dicts</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">files</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+
+        <span class="k">for</span> <span class="n">root</span><span class="p">,</span> <span class="n">dirs</span><span class="p">,</span> <span class="n">files</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">walk</span><span class="p">(</span><span class="n">data_folder</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">file</span> <span class="ow">in</span> <span class="n">files</span><span class="p">:</span>
+                <span class="n">file_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">root</span><span class="p">,</span> <span class="n">file</span><span class="p">)</span>
+                <span class="n">image_dict</span> <span class="o">=</span> <span class="p">{</span>
+                    <span class="s2">&quot;image&quot;</span><span class="p">:</span> <span class="n">file_path</span><span class="p">,</span>
+                <span class="p">}</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">files</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">file_dicts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">image_dict</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">__debug</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Debug print statements, allows debug messages to be sent if self.debug_mode is True.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            message: The message that is sent</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">debug_mode</span><span class="p">:</span>
+            <span class="nb">print</span><span class="p">(</span><span class="n">message</span><span class="p">)</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+    <span class="k">def</span> <span class="nf">__load_and_translate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">output_folder</span><span class="p">,</span> <span class="n">file_name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Helper function that loads the saved file from monai and applies the necessary affine matrix modifications</span>
+<span class="sd">        to it, then deletes the temporary monai file and saves as the proper nifti file.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            output_folder: The path to the folder that contains the temporary monai saved file.</span>
+<span class="sd">            file_name: The name of the file that was being analyzed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">temp_name</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\.nii\.gz$&quot;</span><span class="p">,</span> <span class="s2">&quot;_temp.nii.gz&quot;</span><span class="p">,</span> <span class="n">file_name</span><span class="p">)</span>
+        <span class="n">temp_file_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">output_folder</span><span class="p">,</span> <span class="n">temp_name</span><span class="p">)</span>
+        <span class="n">seg_img</span> <span class="o">=</span> <span class="n">nib</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">temp_file_path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">__debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;segm affine is </span><span class="si">{</span><span class="n">seg_img</span><span class="o">.</span><span class="n">affine</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">__debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;segm shape is </span><span class="si">{</span><span class="n">seg_img</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">new_affine</span> <span class="o">=</span> <span class="n">seg_img</span><span class="o">.</span><span class="n">affine</span>
+        <span class="n">new_affine</span><span class="p">[:</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span>
+        <span class="n">new_affine</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span> <span class="o">*</span> <span class="n">new_affine</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">__debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;New affine is </span><span class="si">{</span><span class="n">new_affine</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">new_name</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\.nii\.gz$&quot;</span><span class="p">,</span> <span class="s2">&quot;-segmented.nii.gz&quot;</span><span class="p">,</span> <span class="n">file_name</span><span class="p">)</span>
+
+        <span class="n">nib</span><span class="o">.</span><span class="n">save</span><span class="p">(</span>
+            <span class="n">nib</span><span class="o">.</span><span class="n">Nifti1Image</span><span class="p">(</span><span class="n">seg_img</span><span class="o">.</span><span class="n">get_fdata</span><span class="p">(),</span> <span class="n">affine</span><span class="o">=</span><span class="n">new_affine</span><span class="p">),</span>
+            <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">output_folder</span><span class="p">,</span> <span class="n">new_name</span><span class="p">)</span>
+        <span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">temp_file_path</span><span class="p">):</span>
+            <span class="n">os</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">temp_file_path</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">__debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;File &#39;</span><span class="si">{</span><span class="n">temp_file_path</span><span class="si">}</span><span class="s2">&#39; deleted successfully&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">__debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;File &#39;</span><span class="si">{</span><span class="n">temp_file_path</span><span class="si">}</span><span class="s2">&#39; does not exist&quot;</span><span class="p">)</span></div>
+
+
+
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+    <span class="kn">from</span> <span class="nn">monai.transforms</span> <span class="kn">import</span> <span class="p">(</span>
+    <span class="n">AsDiscrete</span><span class="p">,</span>
+    <span class="n">EnsureChannelFirstd</span><span class="p">,</span>
+    <span class="n">Compose</span><span class="p">,</span>
+    <span class="n">CropForegroundd</span><span class="p">,</span>
+    <span class="n">LoadImaged</span><span class="p">,</span>
+    <span class="n">Orientationd</span><span class="p">,</span>
+    <span class="n">RandFlipd</span><span class="p">,</span>
+    <span class="n">RandCropByPosNegLabeld</span><span class="p">,</span>
+    <span class="n">RandShiftIntensityd</span><span class="p">,</span>
+    <span class="n">ScaleIntensityRanged</span><span class="p">,</span>
+    <span class="n">Spacingd</span><span class="p">,</span>
+    <span class="n">RandRotate90d</span><span class="p">,</span>
+    <span class="n">ResizeWithPadOrCropd</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">train_transforms</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span>
+        <span class="p">[</span>
+            <span class="n">LoadImaged</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">]),</span>
+            <span class="n">EnsureChannelFirstd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">]),</span>
+            <span class="n">Orientationd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span> <span class="n">axcodes</span><span class="o">=</span><span class="s2">&quot;RAS&quot;</span><span class="p">),</span>
+            <span class="n">Spacingd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">pixdim</span><span class="o">=</span><span class="p">(</span><span class="mf">1.5</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+                <span class="n">mode</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;bilinear&quot;</span><span class="p">,</span> <span class="s2">&quot;nearest&quot;</span><span class="p">),</span>
+            <span class="p">),</span>
+            <span class="n">ScaleIntensityRanged</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span>
+                <span class="n">a_min</span><span class="o">=-</span><span class="mi">175</span><span class="p">,</span>
+                <span class="n">a_max</span><span class="o">=</span><span class="mi">250</span><span class="p">,</span>
+                <span class="n">b_min</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+                <span class="n">b_max</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+                <span class="n">clip</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">CropForegroundd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span> <span class="n">source_key</span><span class="o">=</span><span class="s2">&quot;image&quot;</span><span class="p">),</span>
+            <span class="n">RandCropByPosNegLabeld</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">label_key</span><span class="o">=</span><span class="s2">&quot;label&quot;</span><span class="p">,</span>
+                <span class="c1"># This here needs to be negative</span>
+                <span class="n">spatial_size</span><span class="o">=</span><span class="p">(</span><span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">),</span>
+                <span class="n">pos</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                <span class="n">neg</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                <span class="n">num_samples</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+                <span class="n">image_key</span><span class="o">=</span><span class="s2">&quot;image&quot;</span><span class="p">,</span>
+                <span class="n">image_threshold</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">ResizeWithPadOrCropd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">spatial_size</span><span class="o">=</span><span class="p">(</span><span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">,</span> <span class="mi">96</span><span class="p">),</span>
+                <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;constant&#39;</span>
+            <span class="p">),</span>
+            <span class="n">RandFlipd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">spatial_axis</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
+                <span class="n">prob</span><span class="o">=</span><span class="mf">0.10</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">RandFlipd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">spatial_axis</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span>
+                <span class="n">prob</span><span class="o">=</span><span class="mf">0.10</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">RandFlipd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">spatial_axis</span><span class="o">=</span><span class="p">[</span><span class="mi">2</span><span class="p">],</span>
+                <span class="n">prob</span><span class="o">=</span><span class="mf">0.10</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">RandRotate90d</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">prob</span><span class="o">=</span><span class="mf">0.10</span><span class="p">,</span>
+                <span class="n">max_k</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">RandShiftIntensityd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span>
+                <span class="n">offsets</span><span class="o">=</span><span class="mf">0.10</span><span class="p">,</span>
+                <span class="n">prob</span><span class="o">=</span><span class="mf">0.50</span><span class="p">,</span>
+            <span class="p">),</span>
+        <span class="p">]</span>
+    <span class="p">)</span>
+    <span class="n">val_transforms</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span>
+        <span class="p">[</span>
+            <span class="n">LoadImaged</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">]),</span>
+            <span class="n">EnsureChannelFirstd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">]),</span>
+            <span class="n">Orientationd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span> <span class="n">axcodes</span><span class="o">=</span><span class="s2">&quot;RAS&quot;</span><span class="p">),</span>
+            <span class="n">Spacingd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span>
+                <span class="n">pixdim</span><span class="o">=</span><span class="p">(</span><span class="mf">1.5</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+                <span class="n">mode</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;bilinear&quot;</span><span class="p">,</span> <span class="s2">&quot;nearest&quot;</span><span class="p">),</span>
+            <span class="p">),</span>
+            <span class="n">ScaleIntensityRanged</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span> <span class="n">a_min</span><span class="o">=-</span><span class="mi">175</span><span class="p">,</span> <span class="n">a_max</span><span class="o">=</span><span class="mi">250</span><span class="p">,</span> <span class="n">b_min</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">b_max</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">clip</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+            <span class="n">CropForegroundd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">],</span> <span class="n">source_key</span><span class="o">=</span><span class="s2">&quot;image&quot;</span><span class="p">),</span>
+        <span class="p">]</span>
+    <span class="p">)</span>
+    <span class="n">inf_transforms</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span>
+        <span class="p">[</span>
+            <span class="n">LoadImaged</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">]),</span>
+            <span class="n">EnsureChannelFirstd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">]),</span>
+            <span class="n">Orientationd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span> <span class="n">axcodes</span><span class="o">=</span><span class="s2">&quot;RAS&quot;</span><span class="p">),</span>
+            <span class="n">Spacingd</span><span class="p">(</span>
+                <span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span>
+                <span class="n">pixdim</span><span class="o">=</span><span class="p">(</span><span class="mf">1.5</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+                <span class="n">mode</span><span class="o">=</span><span class="s2">&quot;bilinear&quot;</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">ScaleIntensityRanged</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span> <span class="n">a_min</span><span class="o">=-</span><span class="mi">175</span><span class="p">,</span> <span class="n">a_max</span><span class="o">=</span><span class="mi">250</span><span class="p">,</span> <span class="n">b_min</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">b_max</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">clip</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+            <span class="n">CropForegroundd</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;image&quot;</span><span class="p">],</span> <span class="n">source_key</span><span class="o">=</span><span class="s2">&quot;image&quot;</span><span class="p">),</span>
+        <span class="p">]</span>
+    <span class="p">)</span>
+    <span class="c1"># Only run this file directly for debugging</span>
+    <span class="n">trainer</span> <span class="o">=</span> <span class="n">Pipeline</span><span class="p">(</span><span class="n">model_type</span><span class="o">=</span><span class="s2">&quot;UNETR&quot;</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">num_of_labels</span><span class="o">=</span><span class="mi">14</span><span class="p">,</span>
+                       <span class="n">model_path</span><span class="o">=</span><span class="s2">&quot;F:</span><span class="se">\\</span><span class="s2">2404_Organ_Segmentation</span><span class="se">\\</span><span class="s2">segmentation-pipeline</span><span class="se">\\</span><span class="s2">best_metric_model_3dUNETR54375.pth&quot;</span><span class="p">,</span> <span class="n">debug</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">trainer</span><span class="o">.</span><span class="n">load_data</span><span class="p">(</span><span class="s1">&#39;F:</span><span class="se">\\</span><span class="s1">2404_Organ_Segmentation\BTCV\Abdomen\RawData\dataset_0.json&#39;</span><span class="p">,</span> <span class="n">train_transforms</span><span class="p">,</span> <span class="n">val_transforms</span><span class="p">)</span>
+    <span class="n">trainer</span><span class="o">.</span><span class="n">inference</span><span class="p">(</span><span class="n">data_folder</span> <span class="o">=</span> <span class="s1">&#39;F:</span><span class="se">\\</span><span class="s1">2404_Organ_Segmentation\BTCV\Abdomen\RawData\inf_test&#39;</span><span class="p">,</span> <span class="n">output_folder</span><span class="o">=</span><span class="s2">&quot;F:</span><span class="se">\\</span><span class="s2">2404_Organ_Segmentation\BTCV\Abdomen\RawData\inf_output&quot;</span><span class="p">,</span> <span class="n">transforms</span><span class="o">=</span><span class="n">inf_transforms</span><span class="p">)</span>
+    <span class="n">trainer</span><span class="o">.</span><span class="n">train</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, 2404 Organ Segmentation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,28 +1,15 @@
 from monai.networks.nets import SwinUNETR, UNETR
-from monai.data import load_decathlon_datalist, CacheDataset, set_track_meta, ThreadDataLoader, \
-    decollate_batch, DataLoader
+from monai.data import load_decathlon_datalist, CacheDataset, decollate_batch, DataLoader
 from monai.transforms import (
     AsDiscrete,
     Compose,
-    CropForegroundd,
-    LoadImaged,
-    Orientationd,
-    RandFlipd,
-    RandCropByPosNegLabeld,
-    RandShiftIntensityd,
-    ScaleIntensityRanged,
-    Spacingd,
-    RandRotate90d,
     EnsureTyped,
-    EnsureChannelFirstd,
     Activationsd,
     Invertd,
     AsDiscreted,
     SaveImaged,
     KeepLargestConnectedComponentd,
-    Affined,
 )
-from monai.config import print_config
 from monai.metrics import DiceMetric
 from monai.losses import DiceCELoss
 from monai.inferers import sliding_window_inference
@@ -30,63 +17,51 @@ import torch
 import re
 import nibabel as nib
 import os
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 import json
-import scipy.ndimage as ndimage
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import math
-import numpy as np
 from monai import data
-
-UNETR_transforms = Compose(
-    [
-        LoadImaged(keys=["image"]),
-        EnsureChannelFirstd(keys=["image"]),
-        Orientationd(keys=["image"], axcodes="RAS"),
-        Spacingd(
-            keys=["image"],
-            pixdim=(1.5, 1.5, 2.0),
-            mode="bilinear",
-        ),
-        ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
-        CropForegroundd(keys=["image"], source_key="image"),
-    ]
-)
-
-
-# TODO: Add transforms that were used for swinunetr model training
 
 
 class Pipeline:
+    """
+    Class for managing machine learning pipeline for medical image semantic segmentation. It assists with loading 
+    models and data for training, and it automatically records metrics and save check points.
 
-    def __init__(self, model_type: str, modality: int, num_of_labels: int, model_path: str = None,
-                 data_folder: str = None, debug: bool = False, training: bool = False):
-        """! Parent constructor for model prediction. Defines the model type that is used as well as the paths for
+    Attributes:
+        debug_mode(bool): Whether the pipeline is in debug mode or not
+        model: The neural network used for training or inference.
+        model_type (str): Neural network architecture of model. Currently supports UNETR and SWINUNETR
+        train_transforms: Transformations applied on the training dataset
+        val_transforms: Transformations applied on the validation dataset
+        modality (int): Input dimension of the loaded dataset
+        num_of_labels (int): Number of output classes of the dataset
+        dataset_name (str): Name of the dataset
+        num_train_images (int): Number of training images in the dataset
+        num_val_images (int): Number of validation images in the dataset
+        train_batch_size (int): Batchsize for training
+    """
+
+    def __init__(self, model_type: str, modality: int, num_of_labels: int, model_path: str = "", 
+                 debug: bool = False):
+        """ 
+        Parent constructor for model prediction. Defines the model type that is used as well as the paths for
         loading the pretrained model, loading and saving the data
 
-        @:param model: The model that is going to be used for predictions. Should be monai UNETR or SwinUNETR.
-        @:param model_path: The path to the pretrained model as a string. Should include the model .pth file.
-        @:param data_folder: The folder where the data is located as string. All files in this folder should be medical
-        images.
-        @:param debug: Boolean that enables debug messages. Defaults to false to disable messages.
-        @:return None
+        Args:
+            model: The model that is going to be used for predictions. Should be monai UNETR or SwinUNETR.
+            model_path (str): The path to the pretrained model as a string. Should include the model .pth file.
+            debug (bool): Boolean that enables debug messages. Defaults to false to disable messages.
         """
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if training is False and data_folder is not None and model_path is not None:
-            self.val_loader = None
-            self.debug_mode = debug
-
-            self.file_dicts = []
-            self.files = []
-            self.__load_inference_dataset(data_folder)
-            self.create_model(model_type=model_type, modality=modality, num_of_labels=num_of_labels,
+        self.debug_mode = debug
+        self.create_model(model_type=model_type, modality=modality, num_of_labels=num_of_labels,
                               model_path=model_path)
-            self.model.eval()
 
-    def create_model(self, model_type: str, modality: int, num_of_labels: int, model_path: str = ""):
+    def create_model(self, model_type: str, modality: int, num_of_labels: int, model_path: str = "") -> None:
         """
         Creates a new model for the pipeline
 
@@ -121,15 +96,20 @@ class Pipeline:
                 feature_size=48,
                 use_checkpoint=True,
             ).to(self.device)
-            self.model.load_from(torch.load(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                         "model_swinvit.pt")))
+            try:
+                if model_path == "":
+                    self.model.load_from(torch.load(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                "model_swinvit.pt")))
+            except:
+                self.__debug("Warning: Could not find model_swinvit.pt. It is best to initiate SwinUNETR " +
+                             "with self supervised pretrained model to reduce training time")
         else:
             raise Exception("Unexpected model type given")
 
         if model_path != "":
             self.model.load_state_dict(torch.load(model_path))
 
-    def load_model(self, model_path: str):
+    def load_model(self, model_path: str) -> None:
         """
         Load the saved model.
 
@@ -139,7 +119,7 @@ class Pipeline:
         self.model.load_state_dict(torch.load(model_path))
 
     def load_data(self, dataset_path: str, train_transforms, val_transforms, cache_num_train: int = 24,
-                  train_batch_size: int = 1, cache_num_val: int = 6, val_batch_size: int = 1, workers: int = 4):
+                  train_batch_size: int = 1, cache_num_val: int = 6, val_batch_size: int = 1, workers: int = 4) -> None:
         """
         Load the training and validation data from the json file for the dataset.
 
@@ -168,6 +148,9 @@ class Pipeline:
                               num_workers=workers)
         val_loader = DataLoader(val_ds, batch_size=val_batch_size, shuffle=False, num_workers=workers, pin_memory=True)
 
+        self.train_transforms = train_transforms
+        self.val_transforms = val_transforms
+
         f = open(dataset_path)
         json_data = json.load(f)
 
@@ -183,7 +166,17 @@ class Pipeline:
         self.val_loader = val_loader
         self.train_loader = train_loader
 
-    def train(self, max_epoch: int, epoch_val: int, learning_rate: float = 1e-4, weight_decay: float = 1e-5):
+    def train(self, max_epoch: int, epoch_val: int, learning_rate: float = 1e-4, weight_decay: float = 1e-5) -> None:
+        """
+        Initiate training for the loaded model on the loaded dataset.
+
+        Args:
+            max_epoch: Total number of epoch to train.
+            epoch_val: Number of epochs between every validation and saving the model
+            learning_rate: learning rate of the training process with AdamW optimizer
+            weight_decay: Weight decay for the AdamW optimizer
+        """
+
         torch.backends.cudnn.benchmark = True
         loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -247,7 +240,7 @@ class Pipeline:
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-                epoch_iterator.set_description(  # noqa: B038
+                epoch_iterator.set_description( 
                     f"Training ({global_step} / {max_iterations} Steps) (loss={loss:2.5f})"
                 )
 
@@ -281,19 +274,28 @@ class Pipeline:
 
         writer.close()
 
-    def inference(self, output_folder) -> None:
-        """! Runs the prediction on the files located under self.data_folder, will save the files as Nifti (.nii.gz)
+    def inference(self, data_folder, output_folder, transforms) -> None:
+        """ 
+        Runs the prediction on the files located under self.data_folder, will save the files as Nifti (.nii.gz)
         format under output_folder. If output_folder is not specified, then it will be saved to the folder where the
         data was originally taken from.
 
-        @:param output_folder: The folder path to save the nifti images as a string. If None, then it will save to the
-        folder where the data files are located. (self.data_folder)
-        @:return None
+        Args:
+            data_folder (str): The folder where the data is located as string. All files in this folder should be medical
+                images.
+            output_folder: The folder path to save the nifti images as a string. If None, then it will save to the
+                folder where the data files are located. (self.data_folder)
+            transforms: Transformations to apply onto images before inferece. Should be similar to transformation done on 
+                validation dataset
         """
-
+        self.inference_transforms = transforms
+        self.file_dicts = []
+        self.files = []
+        self.__load_inference_dataset(data_folder)
+        self.model.eval()
         counter = 0
         with torch.no_grad():
-            for i, test_data in enumerate(self.val_loader):
+            for i, test_data in enumerate(self.val_loader_inference):
                 # Make prediction
                 img = test_data["image"].to(self.device)
                 test_data["pred"] = sliding_window_inference(img, (96, 96, 96), 4, self.model, overlap=0.8)
@@ -305,7 +307,7 @@ class Pipeline:
                     Activationsd(keys="pred", softmax=True),
                     Invertd(
                         keys="pred",  # invert the `pred` data field, also support multiple fields
-                        transform=UNETR_transforms,
+                        transform = self.inference_transforms,
                         orig_keys="image",
                         # get the previously applied pre_transforms information on the `img` data field,
                         # then invert `pred` based on this information. we can use same info
@@ -336,16 +338,17 @@ class Pipeline:
                 counter += 1
 
     def __load_inference_dataset(self, data_folder: str) -> None:
-        """! Loads and preprocesses the data specified in under data_folder. Will save the data as a Monai
+        """
+        Loads and preprocesses the data specified in under data_folder. Will save the data as a Monai
         Dataloader and apply the relevant transforms that were used for training.
 
-        @:param data_folder: Path as a string to the folder where the medical images to be segmented are located.
-        @:return None
+        Args:
+            data_folder: Path as a string to the folder where the medical images to be segmented are located.
         """
 
         self.__load_files_from_folder(data_folder)
-        test_dataset = data.Dataset(data=self.file_dicts, transform=UNETR_transforms)
-        self.val_loader = data.DataLoader(
+        test_dataset = data.Dataset(data=self.file_dicts, transform=self.inference_transforms)
+        self.val_loader_inference = data.DataLoader(
             test_dataset,
             batch_size=1,
             shuffle=False,
@@ -354,13 +357,14 @@ class Pipeline:
         )
 
     def __load_files_from_folder(self, data_folder: str) -> None:
-        """! Loads the files into a list of dictionaries to be read by Monai's built in dataset. This needs to be
+        """
+        Loads the files into a list of dictionaries to be read by Monai's built in dataset. This needs to be
         formatted in this specific way so the transforms can be properly applied (the transforms are expecting specific
         keys). The files that are loaded are all the files in the folder specified by data_folder. This is a mock
         of Monai's load_decathlon_datalist().
 
-        @:param data_folder: Path as a string to the folder where the medical images to be segmented are located.
-        @:return None
+        Args:
+            data_folder: Path as a string to the folder where the medical images to be segmented are located.
         """
         self.file_dicts.clear()
         self.files.clear()
@@ -375,22 +379,24 @@ class Pipeline:
                 self.file_dicts.append(image_dict)
 
     def __debug(self, message: str) -> None:
-        """! Debug print statements, allows debug messages to be sent if self.debug_mode is True.
+        """
+        Debug print statements, allows debug messages to be sent if self.debug_mode is True.
 
-        @:param message: The message that is sent
-        @:return None
+        Args:
+            message: The message that is sent
         """
         if self.debug_mode:
             print(message)
         return None
 
     def __load_and_translate(self, output_folder, file_name) -> None:
-        """! Helper function that loads the saved file from monai and applies the necessary affine matrix modifications
+        """
+        Helper function that loads the saved file from monai and applies the necessary affine matrix modifications
         to it, then deletes the temporary monai file and saves as the proper nifti file.
 
-        @:param output_folder: The path to the folder that contains the temporary monai saved file.
-        @:param file_name: The name of the file that was being analyzed.
-        @:return None
+        Args:
+            output_folder: The path to the folder that contains the temporary monai saved file.
+            file_name: The name of the file that was being analyzed.
         """
         temp_name = re.sub(r"\.nii\.gz$", "_temp.nii.gz", file_name)
         temp_file_path = os.path.join(output_folder, temp_name)
@@ -418,9 +424,113 @@ class Pipeline:
 
 
 if __name__ == "__main__":
+    from monai.transforms import (
+    AsDiscrete,
+    EnsureChannelFirstd,
+    Compose,
+    CropForegroundd,
+    LoadImaged,
+    Orientationd,
+    RandFlipd,
+    RandCropByPosNegLabeld,
+    RandShiftIntensityd,
+    ScaleIntensityRanged,
+    Spacingd,
+    RandRotate90d,
+    ResizeWithPadOrCropd,
+    )
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            EnsureChannelFirstd(keys=["image", "label"]),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode=("bilinear", "nearest"),
+            ),
+            ScaleIntensityRanged(
+                keys=["image"],
+                a_min=-175,
+                a_max=250,
+                b_min=0.0,
+                b_max=1.0,
+                clip=True,
+            ),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label",
+                # This here needs to be negative
+                spatial_size=(96, 96, -1),
+                pos=1,
+                neg=1,
+                num_samples=4,
+                image_key="image",
+                image_threshold=0,
+            ),
+            ResizeWithPadOrCropd(keys=["image", "label"],
+                spatial_size=(96, 96, 96),
+                mode='constant'
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[0],
+                prob=0.10,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[1],
+                prob=0.10,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[2],
+                prob=0.10,
+            ),
+            RandRotate90d(
+                keys=["image", "label"],
+                prob=0.10,
+                max_k=3,
+            ),
+            RandShiftIntensityd(
+                keys=["image"],
+                offsets=0.10,
+                prob=0.50,
+            ),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            EnsureChannelFirstd(keys=["image", "label"]),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode=("bilinear", "nearest"),
+            ),
+            ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+        ]
+    )
+    inf_transforms = Compose(
+        [
+            LoadImaged(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(
+                keys=["image"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode="bilinear",
+            ),
+            ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
+            CropForegroundd(keys=["image"], source_key="image"),
+        ]
+    )
     # Only run this file directly for debugging
     trainer = Pipeline(model_type="UNETR", modality=1, num_of_labels=14,
-                       model_path="./pretrained_models/best_metric_model_3dUNETR52200.pth", data_folder="./testing",
-                       debug=True)
-    trainer.inference(output_folder="./testing")
-
+                       model_path="F:\\2404_Organ_Segmentation\\segmentation-pipeline\\best_metric_model_3dUNETR54375.pth", debug=True)
+    trainer.load_data('F:\\2404_Organ_Segmentation\BTCV\Abdomen\RawData\dataset_0.json', train_transforms, val_transforms)
+    trainer.inference(data_folder = 'F:\\2404_Organ_Segmentation\BTCV\Abdomen\RawData\inf_test', output_folder="F:\\2404_Organ_Segmentation\BTCV\Abdomen\RawData\inf_output", transforms=inf_transforms)
+    trainer.train(2,1)

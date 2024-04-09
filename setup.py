@@ -12,6 +12,8 @@ setup(
         'tqdm==4.66.1',
         'scipy==1.12.0',
         'numpy==1.24.1',
+        'einops==0.7.0',
+        'scikit-image==0.22.0',
     ],
     author='2404 Organ Segmentation',
     author_email='joey.xiang426@gmail.com',

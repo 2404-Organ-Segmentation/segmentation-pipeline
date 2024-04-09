@@ -1,0 +1,10 @@
+pipeline package
+================
+
+Module contents
+---------------
+
+.. automodule:: pipeline
+   :members:
+   :undoc-members:
+   :show-inheritance:
