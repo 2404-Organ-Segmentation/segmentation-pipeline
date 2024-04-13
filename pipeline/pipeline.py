@@ -25,6 +25,15 @@ import math
 from monai import data
 
 
+def dice(x, y):
+    intersect = np.sum(np.sum(np.sum(x * y)))
+    y_sum = np.sum(np.sum(np.sum(y)))
+    if y_sum == 0:
+        return 0.0
+    x_sum = np.sum(np.sum(np.sum(x)))
+    return 2 * intersect / (x_sum + y_sum)
+
+
 class Pipeline:
     """
     Class for managing machine learning pipeline for medical image semantic segmentation. It assists with loading 
@@ -200,7 +209,7 @@ class Pipeline:
         epoch_loss_values = []
         metric_values = []
 
-        def __validation(epoch_iterator_val):
+        def __validation(epoch_iterator_val, num_labels=14):
             self.model.eval()
             with torch.no_grad():
                 for batch in epoch_iterator_val:
@@ -212,8 +221,18 @@ class Pipeline:
                     val_outputs_list = decollate_batch(val_outputs)
                     val_output_convert = [post_pred(val_pred_tensor) for val_pred_tensor in val_outputs_list]
 
+                    label_outputs = torch.softmax(val_outputs, 1).cpu().numpy()
+                    label_outputs = np.argmax(label_outputs, axis=1).astype(np.uint8)
+
                     # Calculate metrics
                     dice_metric(y_pred=val_output_convert, y=val_labels_convert)
+
+                    # Code extracted from
+                    # https://github.com/Project-MONAI/research-contributions/blob/main/UNETR/BTCV/trainer.py
+                    dice_list_per_label = []
+                    for i in range(1, num_labels):
+                        label_dice = dice(label_outputs[0] == i, val_labels[0] == i)
+                        dice_list_per_label.append(label_dice)
 
                     epoch_iterator_val.set_description(
                         "Validate (%d / %d Steps)" % (global_step, max_iterations))  # noqa: B038
@@ -221,7 +240,7 @@ class Pipeline:
 
                 dice_metric.reset()
 
-            return mean_dice_val
+            return mean_dice_val, dice_list_per_label
 
         def __train(global_step, train_loader, dice_val_best, global_step_best):
             self.model.train()
@@ -247,7 +266,7 @@ class Pipeline:
                 if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
                     epoch_iterator_val = tqdm(self.val_loader, desc="Validate (X / X Steps) (dice=X.X)",
                                               dynamic_ncols=True)
-                    dice_val = __validation(epoch_iterator_val)
+                    dice_val, dice_label_list = __validation(epoch_iterator_val)
                     epoch_loss /= step
                     epoch_loss_values.append(epoch_loss)
                     metric_values.append(dice_val)
