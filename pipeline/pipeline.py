@@ -10,7 +10,7 @@ from monai.transforms import (
     SaveImaged,
     KeepLargestConnectedComponentd,
 )
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, MeanIoU, MAEMetric
 from monai.losses import DiceCELoss
 from monai.inferers import sliding_window_inference
 import torch
@@ -143,10 +143,10 @@ class Pipeline:
             num_workers=workers,
         )
         train_loader = DataLoader(train_ds, batch_size=train_batch_size, shuffle=True, num_workers=workers,
-                                  pin_memory=True)
+                                  pin_memory=False)
         val_ds = CacheDataset(data=val_files, transform=val_transforms, cache_num=cache_num_val, cache_rate=1.0,
                               num_workers=workers)
-        val_loader = DataLoader(val_ds, batch_size=val_batch_size, shuffle=False, num_workers=workers, pin_memory=True)
+        val_loader = DataLoader(val_ds, batch_size=val_batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
@@ -188,7 +188,9 @@ class Pipeline:
         post_pred = AsDiscrete(argmax=True, to_onehot=self.num_of_labels)
 
         dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
-
+        iou_metric = MeanIoU(include_background=True)
+        pixel_metric = MAEMetric()
+        
         save_folder = self.model_type + self.dataset_name + str(datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
         os.makedirs(save_folder)
         os.makedirs(save_folder + "/logs")
@@ -214,14 +216,20 @@ class Pipeline:
 
                     # Calculate metrics
                     dice_metric(y_pred=val_output_convert, y=val_labels_convert)
+                    iou_metric(y_pred=val_output_convert, y=val_labels_convert)
+                    pixel_metric(y_pred=val_output_convert, y=val_labels_convert)
 
                     epoch_iterator_val.set_description(
                         "Validate (%d / %d Steps)" % (global_step, max_iterations))  # noqa: B038
                 mean_dice_val = dice_metric.aggregate().item()
+                mean_iou = iou_metric.aggregate().item()
+                pixel_error = pixel_metric.aggregate().item()
 
                 dice_metric.reset()
+                iou_metric.reset()
+                pixel_metric.reset()
 
-            return mean_dice_val
+            return mean_dice_val, mean_iou, pixel_error
 
         def __train(global_step, train_loader, dice_val_best, global_step_best):
             self.model.train()
@@ -247,7 +255,7 @@ class Pipeline:
                 if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
                     epoch_iterator_val = tqdm(self.val_loader, desc="Validate (X / X Steps) (dice=X.X)",
                                               dynamic_ncols=True)
-                    dice_val = __validation(epoch_iterator_val)
+                    dice_val, iou_val, pixel_err_val = __validation(epoch_iterator_val)
                     epoch_loss /= step
                     epoch_loss_values.append(epoch_loss)
                     metric_values.append(dice_val)
@@ -264,6 +272,8 @@ class Pipeline:
                     )
                     # Record metric with tensorboard
                     writer.add_scalar("Dice Val", dice_val, global_step=global_step)
+                    writer.add_scalar("IoU Val", iou_val, global_step=global_step)
+                    writer.add_scalar("Pixel Error", pixel_err_val, global_step=global_step)
                     writer.add_scalar("Dice Cross Entropy Loss", epoch_loss, global_step=global_step)
                 global_step += 1
             return global_step, dice_val_best, global_step_best
@@ -353,7 +363,7 @@ class Pipeline:
             batch_size=1,
             shuffle=False,
             num_workers=4,
-            pin_memory=True,
+            pin_memory=False,
         )
 
     def __load_files_from_folder(self, data_folder: str) -> None:
